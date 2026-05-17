@@ -1,1 +1,1 @@
-web: python checker.py
+web: playwright install chromium && python checker.py
