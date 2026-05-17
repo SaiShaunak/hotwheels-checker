@@ -2,12 +2,12 @@ import os
 import time
 import json
 import logging
-import requests
 import threading
+import schedule
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from twilio.rest import Client
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,76 +19,39 @@ log = logging.getLogger(__name__)
 TWILIO_ACCOUNT_SID     = os.environ["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN      = os.environ["TWILIO_AUTH_TOKEN"]
 YOUR_WHATSAPP_NUMBER   = os.environ["YOUR_WHATSAPP_NUMBER"]
-CHECK_INTERVAL_MINUTES = int(os.environ.get("CHECK_INTERVAL_MINUTES", "15"))
+CHECK_INTERVAL_MINUTES = int(os.environ.get("CHECK_INTERVAL_MINUTES", "65"))
 PORT                   = int(os.environ.get("PORT", "8080"))
 TWILIO_WHATSAPP_FROM   = "whatsapp:+14155238886"
 
-# ── Your location: Sannidhi Road, Basavanagudi, Bangalore 560004 ──────────────
-LAT      = "12.9422"
-LON      = "77.5739"
-PINCODE  = "560004"
-CITY     = "Bangalore"
+# ── Location: Sannidhi Road, Basavanagudi, Bangalore 560004 ──────────────────
+LAT = 12.9422
+LON = 77.5739
+
+KEYWORDS     = ["hot wheels", "hotwheels", "hot-wheels"]
+OOS_KEYWORDS = ["out of stock", "sold out", "notify me"]
 
 PLATFORMS = [
     {
         "name": "Blinkit",
-        "url": f"https://blinkit.com/s/?q=hot+wheels&lat={LAT}&lon={LON}",
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-            "Accept-Language": "en-IN,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "lat": LAT,
-            "lon": LON,
-        },
-        "keywords": ["hot wheels", "hotwheels", "matchbox"],
-        "oos_markers": ["out of stock", "notify me", "sold out"],
-    },
-    {
-        "name": "BigBasket",
-        "url": f"https://www.bigbasket.com/ps/?q=hot+wheels&tab=prd&pincode={PINCODE}",
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-            "Accept-Language": "en-IN,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Cookie": f"userPincode={PINCODE}; userCity={CITY}",
-        },
-        "keywords": ["hot wheels", "hotwheels", "matchbox"],
-        "oos_markers": ["out of stock", "notify me", "sold out"],
+        "url": f"https://blinkit.com/s/?q=hot+wheels",
+        "set_location": "blinkit",
     },
     {
         "name": "Instamart",
-        "url": f"https://www.swiggy.com/instamart/search?query=hot+wheels&lat={LAT}&lng={LON}",
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-            "Accept-Language": "en-IN,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        },
-        "keywords": ["hot wheels", "hotwheels", "matchbox"],
-        "oos_markers": ["out of stock", "sold out"],
+        "url": f"https://www.swiggy.com/instamart/search?query=hot+wheels",
+        "set_location": "swiggy",
     },
     {
-        "name": "Zepto",
-        "url": f"https://www.zeptonow.com/search?query=hot+wheels",
-        "headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-            "Accept-Language": "en-IN,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "x-latitude": LAT,
-            "x-longitude": LON,
-        },
-        "keywords": ["hot wheels", "hotwheels", "matchbox"],
-        "oos_markers": ["out of stock", "sold out"],
+        "name": "BigBasket",
+        "url": f"https://www.bigbasket.com/ps/?q=hot+wheels&tab=prd",
+        "set_location": None,
     },
 ]
 
 STATE_FILE = "/tmp/hw_state.json"
-status = {
-    "last_check": "Not yet",
-    "next_check": "Soon",
-    "results": {},
-}
+status = {"last_check": "Not yet", "results": {}}
 
-# ── Web server (keeps Railway alive) ─────────────────────────────────────────
+# ── Web server ────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -101,10 +64,9 @@ class Handler(BaseHTTPRequestHandler):
         )
         html = f"""<html><body style="font-family:sans-serif;padding:20px;max-width:500px">
         <h2>🚗 Hot Wheels Checker ✅</h2>
-        <p><b>Status:</b> Running</p>
-        <p><b>Location:</b> Sannidhi Road, Basavanagudi, Bangalore 560004</p>
+        <p><b>Location:</b> Sannidhi Road, Basavanagudi 560004</p>
         <p><b>Last check:</b> {status['last_check']}</p>
-        <p><b>Next check in:</b> {CHECK_INTERVAL_MINUTES} min</p>
+        <p><b>Interval:</b> every {CHECK_INTERVAL_MINUTES} min</p>
         <p><b>Alerting:</b> {YOUR_WHATSAPP_NUMBER}</p>
         <hr/>{rows}
         </body></html>""".encode()
@@ -114,9 +76,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 def start_web_server():
-    server = HTTPServer(("0.0.0.0", PORT), Handler)
-    log.info(f"Web server running on port {PORT}")
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -149,62 +109,129 @@ def send_whatsapp(platform, products):
     except Exception as e:
         log.error(f"WhatsApp failed: {e}")
 
-def check_platform(platform):
-    name = platform["name"]
+# ── Scraper using real browser + GPS spoofing ─────────────────────────────────
+
+def scrape_platform(browser, platform):
+    name     = platform["name"]
+    url      = platform["url"]
+    loc_type = platform["set_location"]
+    in_stock = []
+
     try:
-        resp = requests.get(platform["url"], headers=platform["headers"], timeout=20)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        in_stock = []
-        for tag in soup.find_all(["h2", "h3", "span", "div", "a"]):
-            t = tag.get_text(strip=True)
-            if not t or len(t) > 120:
-                continue
-            if any(kw in t.lower() for kw in platform["keywords"]):
-                parent_text = (tag.parent.get_text(separator=" ") if tag.parent else "").lower()
-                if any(oos in parent_text for oos in platform["oos_markers"]):
+        # Spoof GPS to Basavanagudi coordinates
+        context = browser.new_context(
+            geolocation={"latitude": LAT, "longitude": LON},
+            permissions=["geolocation"],
+            user_agent=(
+                "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.6367.82 Mobile Safari/537.36"
+            ),
+            locale="en-IN",
+            timezone_id="Asia/Kolkata",
+            viewport={"width": 390, "height": 844},
+        )
+        page = context.new_page()
+
+        # Inject coordinates into localStorage before page loads
+        if loc_type == "blinkit":
+            page.add_init_script(f"""
+                localStorage.setItem('userLat', '{LAT}');
+                localStorage.setItem('userLon', '{LON}');
+                localStorage.setItem('userCity', 'Bangalore');
+            """)
+        elif loc_type == "swiggy":
+            page.add_init_script(f"""
+                localStorage.setItem('swiggy_location', JSON.stringify({{
+                    "lat": {LAT}, "lng": {LON},
+                    "address": "Sannidhi Road, Basavanagudi, Bangalore 560004"
+                }}));
+            """)
+
+        log.info(f"Loading {name}...")
+        page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(6000)  # wait for JS to render products
+
+        # Grab all visible text blocks
+        elements = page.query_selector_all("h1, h2, h3, div, span, p, a")
+        seen = set()
+
+        for el in elements:
+            try:
+                text = el.inner_text().strip()
+                if not text or len(text) > 150 or text in seen:
                     continue
-                if t not in in_stock:
-                    in_stock.append(t)
+                seen.add(text)
+                tl = text.lower()
+
+                if any(kw in tl for kw in KEYWORDS):
+                    # Check parent context for out-of-stock signals
+                    parent = el.evaluate("el => el.parentElement ? el.parentElement.innerText : ''")
+                    if any(oos in parent.lower() for oos in OOS_KEYWORDS):
+                        log.debug(f"  OOS: {text}")
+                        continue
+                    in_stock.append(text)
+            except Exception:
+                continue
+
+        context.close()
         log.info(f"{name}: {len(in_stock)} in-stock item(s) found.")
-        return in_stock
+
     except Exception as e:
-        log.error(f"{name} error: {e}")
-        return []
+        log.error(f"{name} scrape error: {e}")
+
+    return in_stock
+
+# ── Main check loop ───────────────────────────────────────────────────────────
 
 def run_check():
-    log.info(f"=== Check started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===")
-    log.info(f"Location: Sannidhi Road, Basavanagudi {PINCODE} (lat={LAT}, lon={LON})")
-    state = load_state()
+    log.info(f"=== Check at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Basavanagudi {LAT},{LON} ===")
+    state    = load_state()
     new_state = {}
-    for platform in PLATFORMS:
-        found = check_platform(platform)
-        new_state[platform["name"]] = found
-        prev = set(state.get(platform["name"], []))
-        newly_found = [p for p in found if p not in prev]
-        if newly_found:
-            log.info(f"NEW stock on {platform['name']}: {newly_found}")
-            send_whatsapp(platform["name"], newly_found)
-        elif found:
-            log.info(f"{platform['name']}: Same items still in stock.")
-        else:
-            log.info(f"{platform['name']}: Nothing in stock.")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ]
+        )
+
+        for platform in PLATFORMS:
+            found = scrape_platform(browser, platform)
+            new_state[platform["name"]] = found
+            prev        = set(state.get(platform["name"], []))
+            newly_found = [p for p in found if p not in prev]
+
+            if newly_found:
+                log.info(f"🔥 NEW stock on {platform['name']}: {newly_found}")
+                send_whatsapp(platform["name"], newly_found)
+            elif found:
+                log.info(f"{platform['name']}: {len(found)} item(s) still in stock.")
+            else:
+                log.info(f"{platform['name']}: Nothing in stock.")
+
+        browser.close()
+
     save_state(new_state)
     status["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    status["results"] = new_state
+    status["results"]    = new_state
     log.info("=== Check complete ===\n")
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    log.info("🚗 Hot Wheels Stock Checker starting up…")
-    log.info(f"Location: Sannidhi Road, Basavanagudi, Bangalore {PINCODE}")
-    log.info(f"Checking every {CHECK_INTERVAL_MINUTES} minutes.")
+    log.info("🚗 Hot Wheels Checker — Basavanagudi, Bangalore 560004")
+    log.info(f"GPS: {LAT}, {LON} | Interval: {CHECK_INTERVAL_MINUTES} min")
     log.info(f"Alerts → WhatsApp {YOUR_WHATSAPP_NUMBER}")
 
     threading.Thread(target=start_web_server, daemon=True).start()
     run_check()
-    import schedule
     schedule.every(CHECK_INTERVAL_MINUTES).minutes.do(run_check)
     while True:
         schedule.run_pending()
         time.sleep(30)
+
