@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311", "chromium", "nss", "nspr", "atk", "at-spi2-atk", "xorg.libX11", "xorg.libxcb", "xorg.libXcomposite", "xorg.libXdamage", "xorg.libXext", "xorg.libXfixes", "xorg.libXrandr", "libxkbcommon", "mesa", "expat", "libdrm", "alsa-lib", "pango", "cairo", "libuuid", "cups"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt", "playwright install chromium"]
+
+[start]
+cmd = "python checker.py"
